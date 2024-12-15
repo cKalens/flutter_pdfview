@@ -1,6 +1,3 @@
-// Copyright 2018 The Chromium Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style license that can be
-// found in the LICENSE file.
 #import "FlutterPDFView.h"
 
 @implementation FLTPDFViewFactory {
@@ -53,7 +50,8 @@
         [scanner scanHexInt:&rgbValue];
 
         UIColor *colour = [UIColor colorWithRed:((rgbValue & 0xFF0000) >> 16)/255.0
-                                          green:((rgbValue & 0xFF00) >> 8)/255.0 blue:(rgbValue & 0xFF)/255.0 alpha:1.0];
+                                          green:((rgbValue & 0xFF00) >> 8)/255.0
+                                           blue:(rgbValue & 0xFF)/255.0 alpha:1.0];
         _pdfView.view.backgroundColor = colour;
     } @catch (NSException *exception) {
     }
@@ -94,6 +92,7 @@
 
 @implementation FLTPDFView {
     FLTPDFViewController* _controller;
+    UIScrollView *_pdfScrollView;
     PDFView* _pdfView;
     NSNumber* _pageCount;
     NSNumber* _currentPage;
@@ -107,117 +106,130 @@
 - (instancetype)initWithFrame:(CGRect)frame
                     arguments:(id _Nullable)args
                     controller:(nonnull FLTPDFViewController *)controller {
-    _controller = controller;
+    self = [super initWithFrame:frame];
+    if (self) {
+        _controller = controller;
 
-    _pdfView = [[PDFView alloc] initWithFrame: frame];
-    _pdfView.delegate = self;
+        _pdfView = [[PDFView alloc] initWithFrame: frame];
+        _pdfView.delegate = self;
 
-    _autoSpacing = [args[@"autoSpacing"] boolValue];
-    BOOL pageFling = [args[@"pageFling"] boolValue];
-    BOOL enableSwipe = [args[@"enableSwipe"] boolValue];
-    _preventLinkNavigation = [args[@"preventLinkNavigation"] boolValue];
+        _autoSpacing = [args[@"autoSpacing"] boolValue];
+        BOOL pageFling = [args[@"pageFling"] boolValue];
+        BOOL enableSwipe = [args[@"enableSwipe"] boolValue];
+        _preventLinkNavigation = [args[@"preventLinkNavigation"] boolValue];
 
-    NSInteger defaultPage = [args[@"defaultPage"] integerValue];
+        NSInteger defaultPage = [args[@"defaultPage"] integerValue];
 
-    NSString* filePath = args[@"filePath"];
-    FlutterStandardTypedData* pdfData = args[@"pdfData"];
+        NSString* filePath = args[@"filePath"];
+        FlutterStandardTypedData* pdfData = args[@"pdfData"];
 
-    PDFDocument* document;
-    if ([filePath isKindOfClass:[NSString class]]) {
-        NSURL* sourcePDFUrl = [NSURL fileURLWithPath:filePath];
-        document = [[PDFDocument alloc] initWithURL: sourcePDFUrl];
-    } else if ([pdfData isKindOfClass:[FlutterStandardTypedData class]]) {
-        NSData* sourcePDFdata = [pdfData data];
-        document = [[PDFDocument alloc] initWithData: sourcePDFdata];
-    }
+        PDFDocument* document;
+        if ([filePath isKindOfClass:[NSString class]]) {
+            NSURL* sourcePDFUrl = [NSURL fileURLWithPath:filePath];
+            document = [[PDFDocument alloc] initWithURL: sourcePDFUrl];
+        } else if ([pdfData isKindOfClass:[FlutterStandardTypedData class]]) {
+            NSData* sourcePDFdata = [pdfData data];
+            document = [[PDFDocument alloc] initWithData: sourcePDFdata];
+        }
 
-
-    if (document == nil) {
-        [_controller invokeChannelMethod:@"onError" arguments:@{@"error" : @"cannot create document: File not in PDF format or corrupted."}];
-    } else {
-        _pdfView.autoresizesSubviews = true;
-        _pdfView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-        _pdfView.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
-
-        BOOL swipeHorizontal = [args[@"swipeHorizontal"] boolValue];
-        if (swipeHorizontal) {
-            _pdfView.displayDirection = kPDFDisplayDirectionHorizontal;
+        if (document == nil) {
+            [_controller invokeChannelMethod:@"onError" arguments:@{@"error" : @"cannot create document: File not in PDF format or corrupted."}];
         } else {
-            _pdfView.displayDirection = kPDFDisplayDirectionVertical;
+            _pdfView.autoresizesSubviews = true;
+            _pdfView.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+            _pdfView.backgroundColor = [UIColor colorWithWhite:0.95 alpha:1.0];
+
+            BOOL swipeHorizontal = [args[@"swipeHorizontal"] boolValue];
+            if (swipeHorizontal) {
+                _pdfView.displayDirection = kPDFDisplayDirectionHorizontal;
+            } else {
+                _pdfView.displayDirection = kPDFDisplayDirectionVertical;
+            }
+
+            // Sürekli kaydırma, dikey mod
+            [_pdfView usePageViewController:pageFling withViewOptions:nil];
+            _pdfView.displayMode = enableSwipe ? kPDFDisplaySinglePageContinuous : kPDFDisplaySinglePage;
+            _pdfView.document = document;
+            _pdfView.autoScales = _autoSpacing;
+
+            _pdfView.maxScaleFactor = 4.0;
+            _pdfView.minScaleFactor = _pdfView.scaleFactorForSizeToFit;
+
+            NSString* password = args[@"password"];
+            if ([password isKindOfClass:[NSString class]] && [_pdfView.document isEncrypted]) {
+                [_pdfView.document unlockWithPassword:password];
+            }
+
+            UITapGestureRecognizer *tapGestureRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onDoubleTap:)];
+            tapGestureRecognizer.numberOfTapsRequired = 2;
+            tapGestureRecognizer.numberOfTouchesRequired = 1;
+            [_pdfView addGestureRecognizer:tapGestureRecognizer];
+
+            NSUInteger pageCount = [document pageCount];
+
+            if (pageCount <= defaultPage) {
+                defaultPage = pageCount - 1;
+            }
+
+            _defaultPage = [document pageAtIndex: defaultPage];
+            __weak __typeof__(self) weakSelf = self;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                [weakSelf handleRenderCompleted:[NSNumber numberWithUnsignedLong: [document pageCount]]];
+            });
         }
 
-        _pdfView.autoScales = _autoSpacing;
-
-        [_pdfView usePageViewController:pageFling withViewOptions:nil];
-        _pdfView.displayMode = enableSwipe ? kPDFDisplaySinglePageContinuous : kPDFDisplaySinglePage;
-        _pdfView.document = document;
-
-        _pdfView.maxScaleFactor = 4.0;
-        _pdfView.minScaleFactor = _pdfView.scaleFactorForSizeToFit;
-
-        NSString* password = args[@"password"];
-        if ([password isKindOfClass:[NSString class]] && [_pdfView.document isEncrypted]) {
-            [_pdfView.document unlockWithPassword:password];
-        }
-
-        UITapGestureRecognizer *tapGestureRecognizer = [[UITapGestureRecognizer alloc] initWithTarget:self action:@selector(onDoubleTap:)];
-        tapGestureRecognizer.numberOfTapsRequired = 2;
-        tapGestureRecognizer.numberOfTouchesRequired = 1;
-        [_pdfView addGestureRecognizer:tapGestureRecognizer];
-
-        NSUInteger pageCount = [document pageCount];
-
-        if (pageCount <= defaultPage) {
-            defaultPage = pageCount - 1;
-        }
-
-        _defaultPage = [document pageAtIndex: defaultPage];
-        __weak __typeof__(self) weakSelf = self;
-        dispatch_async(dispatch_get_main_queue(), ^{
-            [weakSelf handleRenderCompleted:[NSNumber numberWithUnsignedLong: [document pageCount]]];
-        });
-    }
-
-    if (@available(iOS 11.0, *)) {
-        UIScrollView *_scrollView;
-
-        for (id subview in _pdfView.subviews) {
-            if ([subview isKindOfClass: [UIScrollView class]]) {
-                _scrollView = subview;
+        if (@available(iOS 11.0, *)) {
+            for (id subview in _pdfView.subviews) {
+                if ([subview isKindOfClass: [UIScrollView class]]) {
+                    _pdfScrollView = subview;
+                    _pdfScrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
+                    if (@available(iOS 13.0, *)) {
+                        _pdfScrollView.automaticallyAdjustsScrollIndicatorInsets = NO;
+                    }
+                    break;
+                }
             }
         }
 
-        _scrollView.contentInsetAdjustmentBehavior = UIScrollViewContentInsetAdjustmentNever;
-        if (@available(iOS 13.0, *)) {
-            _scrollView.automaticallyAdjustsScrollIndicatorInsets = NO;
-        }
+        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handlePageChanged:) name:PDFViewPageChangedNotification object:_pdfView];
+        [self addSubview:_pdfView];
     }
-
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handlePageChanged:) name:PDFViewPageChangedNotification object:_pdfView];
-    [self addSubview:_pdfView];
-        
     return self;
 }
 
 - (void)layoutSubviews {
     [super layoutSubviews];
-    _pdfView.frame = self.frame;
+
+    _pdfView.frame = self.bounds;
     _pdfView.minScaleFactor = _pdfView.scaleFactorForSizeToFit;
     _pdfView.maxScaleFactor = 4.0;
+
     if (_autoSpacing) {
         _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit;
     }
-    
+
     if (!_defaultPageSet && _defaultPage != nil) {
-        [_pdfView goToPage: _defaultPage];
-        _defaultPageSet = true;
+        [_pdfView goToPage:_defaultPage];
+        _defaultPageSet = YES;
+    }
+
+    BOOL isLandscape = self.bounds.size.width > self.bounds.size.height;
+    if (isLandscape) {
+        // Otomatik ölçeği kapat, manuel zoom yap
+        _pdfView.autoScales = NO;
+        CGFloat desiredScale = 3.2;
+        _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit * desiredScale;
+
+        [_pdfView layoutDocumentView];
+
+    } else {
+        _pdfView.autoScales = YES;
     }
 }
 
 - (UIView*)view {
     return _pdfView;
 }
-
 
 - (void)getPageCount:(FlutterMethodCall*)call result:(FlutterResult)result {
     _pageCount = [NSNumber numberWithUnsignedLong: [[_pdfView document] pageCount]];
@@ -232,7 +244,7 @@
 - (void)setPage:(FlutterMethodCall*)call result:(FlutterResult)result {
     NSDictionary<NSString*, NSNumber*>* arguments = [call arguments];
     NSNumber* page = arguments[@"page"];
-    
+
     [_pdfView goToPage: [_pdfView.document pageAtIndex: page.unsignedLongValue ]];
     result([NSNumber numberWithBool: YES]);
 }
@@ -242,6 +254,23 @@
 }
 
 -(void)handlePageChanged:(NSNotification*)notification {
+    // Cihaz yönünü öğren
+        UIInterfaceOrientation orientation = [UIApplication sharedApplication].windows.firstObject.windowScene.interfaceOrientation;
+
+        // Eğer yatay moddaysa yakınlaştır
+        if (UIInterfaceOrientationIsLandscape(orientation)) {
+            _pdfView.autoScales = NO;
+
+            // Yakınlaştırma oranını belirleyin, örn. 2.0
+            CGFloat desiredScale = 3.2;
+            _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit * desiredScale;
+
+            // Değişiklikleri uygula
+            [_pdfView layoutDocumentView];
+        } else {
+            // Dikey modda otomatik ölçeklemeye geri dön
+            _pdfView.autoScales = YES;
+        }
     [_controller invokeChannelMethod:@"onPageChanged" arguments:@{@"page" : [NSNumber numberWithUnsignedLong: [_pdfView.document indexForPage: _pdfView.currentPage]], @"total" : [NSNumber numberWithUnsignedLong: [_pdfView.document pageCount]]}];
 }
 
@@ -273,13 +302,13 @@
             PDFRect rect = [page boundsForBox:kPDFDisplayBoxMediaBox];
             PDFDestination* destination = [[PDFDestination alloc] initWithPage:page atPoint:CGPointMake(pdfPoint.x - (rect.size.width / 4),pdfPoint.y + (rect.size.height / 4))];
             [UIView animateWithDuration:0.2 animations:^{
-                self-> _pdfView.scaleFactor = self->_pdfView.scaleFactorForSizeToFit *2;
+                self->_pdfView.scaleFactor = self->_pdfView.scaleFactorForSizeToFit *2;
                 [self->_pdfView goToDestination:destination];
             }];
         } else {
-          [UIView animateWithDuration:0.2 animations:^{
-            self->_pdfView.scaleFactor = self->_pdfView.scaleFactorForSizeToFit;
-          }];
+            [UIView animateWithDuration:0.2 animations:^{
+                self->_pdfView.scaleFactor = self->_pdfView.scaleFactorForSizeToFit;
+            }];
         }
     }
 }

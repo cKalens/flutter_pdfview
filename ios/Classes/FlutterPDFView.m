@@ -204,26 +204,51 @@
     _pdfView.minScaleFactor = _pdfView.scaleFactorForSizeToFit;
     _pdfView.maxScaleFactor = 4.0;
 
-    if (_autoSpacing) {
-        _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit;
-    }
-
     if (!_defaultPageSet && _defaultPage != nil) {
         [_pdfView goToPage:_defaultPage];
         _defaultPageSet = YES;
+        [self performSelector:@selector(zoomAndCenter) withObject:nil afterDelay:0];
     }
+}
 
-    BOOL isLandscape = self.bounds.size.width > self.bounds.size.height;
-    if (isLandscape) {
-        // Otomatik ölçeği kapat, manuel zoom yap
-        _pdfView.autoScales = NO;
-        CGFloat desiredScale = 3.2;
-        _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit * desiredScale;
+- (void)zoomAndCenter {
+    PDFPage *currentPage = _pdfView.currentPage;
+    if (!currentPage) return;
 
-        [_pdfView layoutDocumentView];
+    printf("selam");
+    CGRect pageBounds = [currentPage boundsForBox:kPDFDisplayBoxMediaBox];
+    CGFloat pageWidth = pageBounds.size.width;
+    CGFloat pageHeight = pageBounds.size.height;
+    CGFloat viewWidth = self.bounds.size.width;
+    CGFloat viewHeight = self.bounds.size.height;
 
-    } else {
-        _pdfView.autoScales = YES;
+    _pdfView.autoScales = NO; // Otomatik ölçeklemeyi kapat
+
+    CGFloat desiredScale;
+    if (viewWidth > viewHeight) { // Yatay mod
+        desiredScale = viewWidth / pageWidth; // Tam genişlik
+        desiredScale = desiredScale * 0.8; // Biraz boşluk bırak
+    } else { // Dikey mod
+        desiredScale = viewWidth / pageWidth;
+    }
+    desiredScale = MIN(desiredScale, _pdfView.maxScaleFactor);
+
+    _pdfView.scaleFactor = desiredScale;
+
+    CGFloat offsetX = (pageWidth * desiredScale - viewWidth) / 2.0;
+    CGFloat offsetY = (pageHeight * desiredScale - viewHeight) / 3.0;
+
+    offsetX = MAX(0, MIN(offsetX, pageWidth * desiredScale - viewWidth));
+    offsetY = MAX(0, MIN(offsetY, pageHeight * desiredScale - viewHeight));
+
+    for (UIView *subview in _pdfView.subviews) {
+        if ([subview isKindOfClass:NSClassFromString(@"_PDFDocumentView")]) {
+            CGRect subviewFrame = subview.frame;
+            subviewFrame.origin.x = -offsetX;
+            subviewFrame.origin.y = -offsetY;
+            subview.frame = subviewFrame;
+            break;
+        }
     }
 }
 
@@ -259,14 +284,7 @@
 
         // Eğer yatay moddaysa yakınlaştır
         if (UIInterfaceOrientationIsLandscape(orientation)) {
-            _pdfView.autoScales = NO;
-
-            // Yakınlaştırma oranını belirleyin, örn. 2.0
-            CGFloat desiredScale = 3.2;
-            _pdfView.scaleFactor = _pdfView.scaleFactorForSizeToFit * desiredScale;
-
-            // Değişiklikleri uygula
-            [_pdfView layoutDocumentView];
+            //Scroll To top yapılması gerekiyor
         } else {
             // Dikey modda otomatik ölçeklemeye geri dön
             _pdfView.autoScales = YES;
